@@ -1,70 +1,93 @@
 # Finger Paint
 
-Motion-tracking PTZ control for IP cameras. Finger Paint pulls a live RTSP stream, detects moving objects with OpenCV, and steers the camera in real time via ONVIF PTZ commands to keep the target centred in frame — turning any static PTZ camera into a self-tracking one.
+An OpenCV motion tracker that connects an IP camera's RTSP video stream to its ONVIF pan-and-tilt controls. It follows the largest moving region in the frame and shows an annotated desktop preview for tuning the tracking behaviour.
 
-Built and tested against JOOAN A2R-U style cameras, but should work with any camera that exposes an RTSP stream and ONVIF PTZ control.
+The project is a compact Python experiment in computer vision and camera control. Its configuration targets JOOAN A2R-U-style cameras; other cameras need compatible RTSP and ONVIF PTZ support and device-specific configuration.
 
-## How it works
+## What it does
 
-1. **Capture** — grabs frames from the camera's RTSP stream (low-latency buffering to avoid lag).
-2. **Detect** — runs background subtraction (`MOG2`) on each frame to isolate moving objects, filters out noise below a minimum blob size, and picks the largest moving contour as the target.
-3. **Track** — computes how far the target is from frame centre and, if it's outside a configurable dead zone, sends `ContinuousMove` ONVIF commands to pan/tilt the camera toward it. A short cooldown between commands keeps motion smooth instead of jittery.
-4. **Display** — shows a live annotated preview (bounding box, centre crosshair, pan/tilt readout, tracking status) so you can tune settings visually.
+- Detects motion with MOG2 background subtraction, Gaussian blur, thresholding, and contour filtering.
+- Selects the largest contour above a configurable minimum area.
+- Sends ONVIF `ContinuousMove` commands when the target moves outside a central dead zone.
+- Uses fixed pan/tilt speeds and a 0.3-second command cooldown to limit frequent adjustments.
+- Displays the target box, centre guides, movement commands, and tracking state.
+- Attempts to reopen the RTSP stream after a failed frame read.
+- Continues with video and motion detection if the initial ONVIF connection fails.
 
-If the camera can't be reached over ONVIF, the script still runs in display-only mode so you can verify motion detection before wiring up PTZ.
-
-## Features
-
-- Real-time motion detection and tracking using OpenCV
-- Automatic PTZ steering over ONVIF, with smooth speed control and a dead zone to reduce jitter
-- Auto-reconnect on dropped RTSP frames
-- Live on-screen overlay: target box, centre crosshair, pan/tilt values, tracking status
-- Runs in display-only mode if ONVIF isn't available, so detection can be tuned without a live camera
+This is motion tracking, not object recognition: it does not identify people, remember a target, or distinguish camera movement from movement in the scene.
 
 ## Requirements
 
-- Python 3.9+
-- A network IP camera with RTSP streaming and ONVIF PTZ support
+- Python 3.9 or newer and the packages in [requirements.txt](requirements.txt).
+- A desktop environment that can display an OpenCV window.
+- A reachable RTSP video stream; motor control additionally requires an ONVIF PTZ camera.
+- The camera's IP address, credentials, RTSP path, and ONVIF port.
 
-## Setup
+## Getting started
 
-```powershell
-pip install -r requirements.txt
+```bash
+git clone https://github.com/m1-k-k/finger-paint.git
+cd finger-paint
+python -m venv .venv
 ```
 
-Edit the `CONFIG` section at the top of `tracker.py` with your camera's IP, username, and password.
+Activate the environment with `.venv/Scripts/Activate.ps1` in Windows PowerShell, or `source .venv/bin/activate` on macOS/Linux, then install dependencies:
 
-## Run
+```bash
+python -m pip install -r requirements.txt
+```
 
-```powershell
+Edit the `CONFIG` section in [tracker.py](tracker.py), then run:
+
+```bash
 python tracker.py
 ```
 
+Keep the preview window focused when using the keyboard controls.
+
 | Key | Action |
-|-----|--------|
-| `q` | Quit |
-| `p` | Pause / resume tracking |
+| --- | --- |
+| `p` | Pause or resume tracking; pausing sends a motor stop command |
+| `q` | Stop the camera, close the stream, and exit |
 
-## Configuration
+## Camera configuration
 
-Key settings in `tracker.py`:
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `CAM_IP`, `CAM_USER`, `CAM_PASS` | Placeholder camera details | Address and credentials for RTSP and ONVIF |
+| `RTSP_PORT` | `554` | Video-stream port |
+| `ONVIF_PORT` | `8899` | ONVIF service port; varies by camera |
+| `RTSP_URL` | `/onvif1` stream path | Full RTSP URL assembled from the camera settings |
+| `PAN_SPEED` | `0.15` | Horizontal movement speed |
+| `TILT_SPEED` | `0.12` | Vertical movement speed |
+| `DEAD_ZONE` | `0.12` | No-movement zone extending 12% of the frame dimension to each side of centre |
+| `MIN_AREA` | `1500` | Minimum contour area in pixels squared |
 
-| Setting | Description |
-|---|---|
-| `CAM_IP`, `CAM_USER`, `CAM_PASS` | Camera credentials |
-| `RTSP_PORT`, `ONVIF_PORT` | Camera's RTSP and ONVIF ports |
-| `RTSP_URL` | Stream path — try `/onvif1`, `/stream0`, `/ch0_0.264`, or `/live/ch00_0` if the default fails |
-| `PAN_SPEED`, `TILT_SPEED` | PTZ movement speed (0.0–1.0). Lower = smoother, higher = snappier |
-| `DEAD_ZONE` | Centre zone (as a fraction of the frame) where the camera won't adjust, to reduce jitter |
-| `MIN_AREA` | Minimum motion blob size in pixels² — raise this to ignore small/noisy movement |
+The source also lists `/stream0`, `/ch0_0.264`, and `/live/ch00_0` as alternative stream paths to try. Use the path and port supported by your camera. `MOVE_COOLDOWN` is defined inside `main()` if you need to adjust the interval between movement commands.
 
-## Troubleshooting
+Camera credentials are currently edited directly in the source, and the full RTSP URL is printed at startup. Keep those local edits and logs private when sharing code or troubleshooting output.
 
-- **Stream won't open** — double-check `CAM_IP`, credentials, and try the alternate RTSP paths listed above.
-- **Camera doesn't move but video shows fine** — ONVIF connection likely failed; verify `ONVIF_PORT` and that ONVIF is enabled on the camera.
-- **Camera jitters or over-corrects** — increase `DEAD_ZONE`, or lower `PAN_SPEED` / `TILT_SPEED`.
-- **False triggers from small movements** — raise `MIN_AREA`.
+## How the tracking loop works
 
-## Tech stack
+1. Open the RTSP stream and attempt an ONVIF connection using the camera's first media profile.
+2. Blur each frame, subtract the background, and expand the detected foreground regions.
+3. Find the largest qualifying contour and normalise its centre relative to the frame.
+4. Pan or tilt towards the target when it lies outside the dead zone; stop when it is centred or no qualifying motion remains.
+5. Draw the preview and process pause/quit input.
 
-Python · OpenCV · NumPy · ONVIF (`onvif-zeep`, `zeep`) · multithreading
+## Troubleshooting and limitations
+
+| Symptom | What to check |
+| --- | --- |
+| Stream does not open | Camera address, credentials, RTSP port, stream path, and network reachability |
+| Video works but motors do not move | ONVIF availability, service port, credentials, and PTZ support on the selected media profile |
+| Camera oscillates or over-corrects | Reduce pan/tilt speeds or increase the dead zone and command cooldown |
+| Small movements trigger tracking | Increase `MIN_AREA` and test under steadier lighting |
+| Tracking changes target unexpectedly | The algorithm always chooses the largest moving contour; it does not maintain an object identity |
+
+Camera movement, shadows, lighting changes, and multiple moving subjects can confuse background subtraction. Display-only operation still requires a working RTSP stream. The repository contains a single synchronous tracking script and no automated tests or packaged application.
+
+## Repository layout
+
+- [tracker.py](tracker.py) — camera configuration, motion detection, PTZ commands, and preview loop.
+- [requirements.txt](requirements.txt) — OpenCV, NumPy, `onvif-zeep`, and `zeep` dependencies.
